@@ -1,45 +1,62 @@
 # claude-code-codex-task
 
-> Reliable Claude Code sub-agent that wraps the Codex CLI with proper async notification handling.
+> Stop using Opus as a worker. Delegate execution-heavy Claude Code subtasks to Codex CLI while keeping Claude Code's native subagent completion notifications.
 
-## What it does
+`claude-code-codex-task` installs a `codex-task` subagent for Claude Code.
 
-`codex-task` is a Claude Code sub-agent (model: Sonnet) that acts as a thin wrapper around the Codex CLI. It launches a Codex job in the background, polls it until completion using `--wait` native blocking, and returns the result to the parent agent with a standardized `===CODEX_DONE===` prefix — giving the parent thread a clean, reliable notification.
+The parent Claude session keeps the judgment work: orchestration, product decisions, architecture, review.
+Codex does the execution work: reading files, editing code, running tests, debugging build errors, and reporting back.
 
-## Why it exists
+The wrapper stays alive until Codex finishes, so Claude Code still fires the normal task-completion notification in the parent thread.
 
-The openai/codex Claude Code plugin ships with a `--background` flag that detaches the job and returns a task ID. But the parent agent receives no notification when the job finishes. The only reliable pattern is to poll `codex-companion status --wait` in a loop from within a sub-agent that stays alive until the terminal state is reached.
+## Why this exists
 
-This repo packages that polling loop as a drop-in sub-agent definition.
+Claude Code is excellent as an agentic coding interface.
+
+But expensive models should not spend most of their time doing mechanical repo work:
+
+- reading files
+- scanning logs
+- running tests
+- fixing small build errors
+- updating docs
+- repeating patch/test loops
+
+The goal is simple:
+
+```text
+Opus/Sonnet = orchestration and judgment
+Codex CLI   = execution-heavy work
+codex-task  = thin lifecycle adapter
+```
+
+The missing piece was lifecycle handling.
+
+The existing Codex integration can start background jobs, but if the wrapper exits immediately, the parent Claude Code session may not get a reliable completion event. This repo fixes that by making the wrapper long-lived: it starts the Codex job, waits until the terminal state, fetches the result, then exits normally.
 
 ## Architecture
 
-```
-Parent Claude Code (Opus/Sonnet)
+```text
+Claude Code parent session
+
+Parent agent: Opus or Sonnet
         │
-        │  Agent invocation (subagent_type: codex-task)
+        │  delegates to subagent_type: codex-task
         ▼
-  Wrapper Sonnet 4.6 sub-agent
-  ┌─────────────────────────────────────┐
-  │ 1. Launch:  codex-companion task   │
-  │             --background --write   │
-  │ 2. Poll:    codex-companion status │
-  │             <task-id> --wait --json│
-  │             (loop until terminal) │
-  │ 3. Result:  codex-companion result │
-  │             <task-id>             │
-  └─────────────────────────────────────┘
+Sonnet wrapper subagent
         │
-        │  ===CODEX_DONE=== + result text
+        │  1. starts Codex in background
+        │  2. waits with codex-companion status --wait
+        │  3. fetches final result
         ▼
-  Parent thread (notification via CC task system)
+Codex CLI worker
+        │
+        │  reads files, edits code, runs commands, tests, debugs
+        ▼
+Wrapper returns ===CODEX_DONE=== + output
         │
         ▼
-  Codex CLI (GPT-4o / full filesystem access)
-  - reads/writes files
-  - runs shell commands
-  - git operations
-  - NO access to CC MCPs or CC skills
+Claude Code parent receives normal subagent completion notification
 ```
 
 ## Install
@@ -47,70 +64,128 @@ Parent Claude Code (Opus/Sonnet)
 ```bash
 git clone https://github.com/AZERIA-IT/claude-code-codex-task.git
 cd claude-code-codex-task
-chmod +x install.sh && ./install.sh
+chmod +x install.sh
+./install.sh
 ```
 
-Or one-liner (once the repo is public):
-
-## Security note
-Review the install script before executing it: `curl -sL https://raw.githubusercontent.com/AZERIA-IT/claude-code-codex-task/main/install.sh | less`, then run `bash install.sh` after review.
+Or one-liner after reviewing the install script:
 
 ```bash
 curl -sL https://raw.githubusercontent.com/AZERIA-IT/claude-code-codex-task/main/install.sh | bash
 ```
 
-**Prerequisites:**
+Review first:
+
+```bash
+curl -sL https://raw.githubusercontent.com/AZERIA-IT/claude-code-codex-task/main/install.sh | less
+```
+
+## Prerequisites
+
 - Claude Code installed and configured
-- Codex CLI plugin installed in Claude Code (`openai-codex` plugin)
-- OpenAI or ChatGPT account with Codex access
+- Codex CLI available
+- OpenAI/Codex access configured
+- The OpenAI Codex Claude Code plugin installed, with `codex-companion.mjs` available under `~/.claude/plugins/`
 
 ## Usage
 
-From Claude Code, invoke the sub-agent:
+From Claude Code:
 
+```text
+Use the codex-task subagent to:
+Refactor /path/to/project/src/api.py to use async/await throughout.
+Run the relevant tests.
+Fix any failures you introduce.
+Report the final diff and test result.
 ```
-Use the codex-task subagent to: refactor /path/to/src/utils.py to use async/await throughout, run the test suite, and report the results.
-```
 
-The parent agent gets back a single notification containing the full Codex output once done.
+The parent agent gets one completion notification after Codex finishes.
 
-## Cost analysis
+## When to use `codex-task`
 
-- **Wrapper cost**: ~$0.02–0.10 per task on Sonnet 4.6 (the polling wrapper only; very few tokens)
-- **Codex job cost**: charged against your OpenAI / ChatGPT subscription quota (not Anthropic quota)
-- **Key benefit**: Codex does the heavy lifting (file reads, edits, shell commands) using OpenAI quota, preserving your Anthropic rate limits for reasoning and conversation.
+Good fits:
+
+- repo search
+- implementation tasks
+- test writing
+- test failures
+- build debugging
+- dependency cleanup
+- documentation updates
+- batch refactors
+- terminal-heavy investigation
+
+Bad fits:
+
+- product judgment
+- architecture decisions
+- ambiguous strategy questions
+- MCP-only workflows inside Claude Code
+- tasks that need Gmail, Calendar, Drive, browser, or other Claude-only tools
+
+Rule of thumb:
+
+> If the task is “go do this in the repo and report back”, use Codex.
+> If the task is “think deeply and decide”, keep it in Claude.
+
+## Why not just use Codex directly?
+
+You can.
+
+This repo is useful when you want to keep the Claude Code parent session as your orchestrator and still use Claude Code's subagent workflow.
+
+Without this wrapper, the parent may have to manually track or poll Codex background jobs. With this wrapper, the subagent remains alive until Codex completes, then Claude Code's normal task completion flow handles the notification.
+
+## Cost profile
+
+The wrapper is a small Sonnet subagent job.
+
+Codex performs the expensive execution work under your OpenAI/Codex setup, so the repetitive repo work does not burn Anthropic tokens.
+
+This is especially useful on coding-heavy days where the parent model would otherwise spend tokens on file reads, logs, test loops, and small patches.
 
 ## Swarm pattern
 
-Run multiple Codex tasks in parallel by launching N `codex-task` sub-agents simultaneously:
+You can launch multiple `codex-task` subagents in parallel:
 
-```
+```text
 Launch 3 parallel codex-task subagents:
-1. Analyze /src/module_a/ and write a summary to /tmp/summary_a.md
-2. Analyze /src/module_b/ and write a summary to /tmp/summary_b.md  
-3. Analyze /src/module_c/ and write a summary to /tmp/summary_c.md
-Then read all three summaries and synthesize.
+
+1. Analyze /project/src/auth/ and write findings to /tmp/auth.md
+2. Analyze /project/src/billing/ and write findings to /tmp/billing.md
+3. Analyze /project/src/notifications/ and write findings to /tmp/notifications.md
+
+After all 3 complete, read the outputs and synthesize the result.
 ```
 
-Each sub-agent is independent. The parent resumes once all three complete.
+Wall-clock time becomes roughly the slowest individual Codex job, not the sum of all jobs.
+
+See:
+
+- [`examples/single-task.md`](examples/single-task.md)
+- [`examples/swarm-3-tasks.md`](examples/swarm-3-tasks.md)
 
 ## Limitations
 
-- Codex runs in an isolated sandbox with filesystem and shell access only
-- No access to Claude Code MCPs (Gmail, Calendar, Drive, OSINT tools, etc.)
-- No access to Claude Code skills or memory systems
-- Codex cannot stream back partial results — parent waits for full completion
-- Maximum recommended wait: ~40 minutes (10 polling iterations × ~4 min each)
+- Codex does not get Claude Code MCP tools.
+- Codex does not get Claude Code skills or memory.
+- The parent waits for the final result, not streamed partial output.
+- Very long jobs can hit the wrapper timeout.
+- You should still review diffs before committing anything.
+
+## Security
+
+Read `install.sh` before running it.
+
+The installer copies the `codex-task` agent definition into `~/.claude/agents/` and resolves the local `codex-companion.mjs` path.
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
-
----
+MIT. See [`LICENSE`](LICENSE).
 
 ## About AZERIA-IT
 
-AZERIA-IT builds AI-powered French urbanism analysis tools. Founder: Mohamed Abdelouahed.
+AZERIA-IT builds AI engineering tooling and applied AI products.
 
 - LinkedIn: [Mohamed Abdelouahed](https://www.linkedin.com/in/mohamed-abdelouahed/)
 - Website: [AZERIA-IT](https://www.azeria-it.com/)
