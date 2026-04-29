@@ -52,6 +52,9 @@ chmod +x install.sh && ./install.sh
 
 Or one-liner (once the repo is public):
 
+## Security note
+Review the install script before executing it: `curl -sL https://raw.githubusercontent.com/AZERIA-IT/claude-code-codex-task/main/install.sh | less`, then run `bash install.sh` after review.
+
 ```bash
 curl -sL https://raw.githubusercontent.com/AZERIA-IT/claude-code-codex-task/main/install.sh | bash
 ```
