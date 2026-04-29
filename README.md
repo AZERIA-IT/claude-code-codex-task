@@ -107,7 +107,7 @@ MIT — see [LICENSE](LICENSE)
 
 ## About AZERIA-IT
 
-AZERIA-IT builds AI-powered tools for urban planning and document analysis.
+AZERIA-IT builds AI-powered French urbanism analysis tools. Founder: Mohamed Abdelouahed.
 
-- LinkedIn: [TODO — add LinkedIn URL]
-- Website: [TODO — add website URL]
+- LinkedIn: [Mohamed Abdelouahed](https://www.linkedin.com/in/mohamed-abdelouahed/)
+- Website: [AZERIA-IT](https://www.azeria-it.com/)
