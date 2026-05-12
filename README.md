@@ -173,6 +173,63 @@ See:
 - Very long jobs can hit the wrapper timeout.
 - You should still review diffs before committing anything.
 
+## Troubleshooting
+
+### `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`
+
+Symptom: Codex tasks launched via `codex-task` complete with a status of
+`completed` but the wrapper summary reads something like
+`I couldn't create <file>: apply_patch failed, shell commands failed at sandbox
+startup, and the fallback MCP write was rejected`.
+
+The Codex CLI logs show:
+
+```text
+bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+```
+
+Cause: Codex uses [bubblewrap](https://github.com/containers/bubblewrap)
+(`bwrap`) to sandbox shell execution. On some hosts — VPS, restricted LXC
+containers, kernels with `kernel.unprivileged_userns_clone=0`, hosts with
+network capabilities dropped — `bwrap` cannot set up its loopback namespace,
+which breaks both shell commands and `apply_patch` inside the Codex turn.
+
+This is not an issue with `claude-code-codex-task` itself — the wrapper's
+launch / poll / result lifecycle still works correctly; only the Codex
+worker's filesystem writes fail.
+
+Two fixes:
+
+1. **Host side** (preferred when possible):
+
+   ```bash
+   sudo sysctl -w kernel.unprivileged_userns_clone=1
+   echo 'kernel.unprivileged_userns_clone=1' | sudo tee /etc/sysctl.d/99-userns.conf
+   ```
+
+   Some hosting providers disallow this; check with your provider before
+   relying on it.
+
+2. **Bypass Codex sandbox** (acceptable when the host itself is already an
+   isolated sandbox):
+
+   In `~/.codex/config.toml`:
+
+   ```toml
+   approval_policy = "never"
+   sandbox_mode = "danger-full-access"
+   ```
+
+   Note that the upstream `codex-companion.mjs` task command currently
+   hard-codes the per-turn sandbox to `workspace-write` regardless of this
+   config (see [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc)),
+   so on broken-`bwrap` hosts you may also need to patch the companion script
+   to pass `danger-full-access` for write turns, or run Codex outside the
+   companion with `codex exec --dangerously-bypass-approvals-and-sandbox`.
+
+   **Only use this on hosts where you accept that Codex can read and write
+   anywhere your user can.** Never enable this on a personal workstation.
+
 ## Security
 
 Read `install.sh` before running it.
